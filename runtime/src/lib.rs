@@ -274,7 +274,8 @@ impl pallet_template::Config for Runtime {
 }
 
 impl pallet_kitty::Config for Runtime {
-	type Event = Event;
+    type Event = Event;
+    type RandomnessSource = RandomnessCollectiveFlip;
 }
 
 // Create the runtime by composing the FRAME pallets that were previously configured.

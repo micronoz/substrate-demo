@@ -54,6 +54,7 @@ impl system::Config for Test {
 
 impl pallet_kitty::Config for Test {
     type Event = Event;
+    type RandomnessSource = RandomnessCollectiveFlip;
 }
 
 // Build genesis storage according to the mock runtime.

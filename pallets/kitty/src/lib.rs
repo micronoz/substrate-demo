@@ -16,14 +16,18 @@ mod benchmarking;
 
 #[frame_support::pallet]
 pub mod pallet {
-    use frame_support::{dispatch::DispatchResultWithPostInfo, pallet_prelude::*};
+    use frame_support::{
+        dispatch::DispatchResultWithPostInfo, pallet_prelude::*, traits::Randomness,
+    };
     use frame_system::pallet_prelude::*;
+    use sp_core::H256;
 
     /// Configure the pallet by specifying the parameters and types on which it depends.
     #[pallet::config]
     pub trait Config: frame_system::Config {
         /// Because this pallet emits events, it depends on the runtime's definition of an event.
         type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
+        type RandomnessSource: Randomness<H256>;
     }
 
     #[pallet::pallet]
@@ -33,24 +37,47 @@ pub mod pallet {
     // The pallet's runtime storage items.
     // https://substrate.dev/docs/en/knowledgebase/runtime/storage
     #[pallet::storage]
-    #[pallet::getter(fn something)]
     // Learn more about declaring storage items:
     // https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
-    pub(super) type Kitties<T: Config> =
-        StorageMap<_, Blake2_128Concat, T::AccountId, sp_std::vec::Vec<Kitty<T>>, ValueQuery>;
+    pub(super) type KittyOwners<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::AccountId, sp_std::vec::Vec<[u8; 16]>, ValueQuery>;
 
-    #[derive(Encode, Decode, Default, Clone, PartialEq)]
+    #[pallet::storage]
+    pub(super) type Kitties<T: Config> =
+        StorageMap<_, Blake2_128Concat, [u8; 16], Kitty<T>, ValueQuery>;
+
+    #[derive(Encode, Decode, Clone, PartialEq, Debug)]
     pub struct Kitty<T: Config> {
         owner: T::AccountId,
-        dna: u128,
+        dna: [u8; 16],
+    }
+
+    impl<T: Config> Default for Kitty<T> {
+        fn default() -> Kitty<T> {
+            return Kitty {
+                owner: T::AccountId::default(),
+                dna: Default::default(),
+            };
+        }
     }
 
     impl<T: Config> Kitty<T> {
-        pub fn new(owner: T::AccountId) -> Kitty<T> {
-            return Kitty {
-                dna: 1,
-                owner: owner,
-            };
+        pub fn new(owner: T::AccountId) -> Result<Kitty<T>, Error<T>> {
+            // Collect sources for random hash
+            let payload = (
+                owner.clone(),
+                T::RandomnessSource::random(&owner.encode()[..]),
+            );
+
+            // Generate random dna source
+            let dna = payload.using_encoded(sp_io::hashing::blake2_128);
+
+            // Ensure that dna is unique
+            if <Kitties<T>>::contains_key(dna) {
+                return Err(<Error<T>>::DuplicateKitty);
+            } else {
+                return Ok(Kitty { dna, owner });
+            }
         }
     }
 
@@ -60,9 +87,9 @@ pub mod pallet {
     #[pallet::metadata(T::AccountId = "AccountId")]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        /// Event documentation should end with an array that provides descriptive names for event
-        /// parameters. [something, who]
-        SomethingStored(u32, T::AccountId),
+        /// A Kitty has been generated for the owner with random dna.
+        /// [dna, owner]
+        KittyCreated([u8; 16], T::AccountId),
     }
 
     // Errors inform users that something went wrong.
@@ -72,6 +99,8 @@ pub mod pallet {
         NoneValue,
         /// Errors should have helpful documentation associated with them.
         StorageOverflow,
+        /// Kitty was generated with a DNA that already exists
+        DuplicateKitty,
     }
 
     #[pallet::hooks]
@@ -84,34 +113,33 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         /// An example dispatchable that takes a singles value as a parameter, writes the value to
         /// storage and emits an event. This function must be dispatched by a signed extrinsic.
-        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(2,1))]
+        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1))]
         pub fn create_kitty(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
             // Check that the extrinsic was signed and get the signer.
             // This function will return an error if the extrinsic is not signed.
             // https://substrate.dev/docs/en/knowledgebase/runtime/origin
-            let copy_who = ensure_signed(origin.clone())?;
             let who = ensure_signed(origin)?;
+            let my_kitty = <Kitty<T>>::new(who.clone())?;
+            let dna = my_kitty.dna;
 
-            // Update storage.
-            if <Kitties<T>>::contains_key(&who) {
-                <Kitties<T>>::insert(&who, <sp_std::vec::Vec<Kitty<T>>>::new());
+            // Insert the created kitty into storage
+            <Kitties<T>>::insert(dna, &my_kitty);
+
+            match <KittyOwners<T>>::try_get(&who) {
+                Ok(mut result) => {
+                    result.push(dna);
+                    <KittyOwners<T>>::insert(&who, &result);
+                }
+                Err(_) => {
+                    <KittyOwners<T>>::insert(&who, sp_std::vec![dna]);
+                }
             }
 
-            let mut kitties = <Kitties<T>>::get(&who);
-            kitties.push(Kitty::new(copy_who));
-
             // Emit an event.
-            Self::deposit_event(Event::SomethingStored(1, who));
+            Self::deposit_event(Event::KittyCreated(dna, who));
             // Return a successful DispatchResultWithPostInfo
             Ok(().into())
         }
-
-        // #[pallet::weight(10_000 + T::DbWeight::get().reads(1))]
-        // pub fn get_my_kitties(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
-        //     let who = ensure_signed(origin)?;
-        //     let res = <Kitties<T>>::try_get(who)?;
-        //     Ok(().into())
-        // }
 
         /// An example dispatchable that may throw a custom error.
         #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1))]
