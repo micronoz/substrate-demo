@@ -1,4 +1,4 @@
-use crate as pallet_kitty;
+use crate as pallet_kitties;
 use frame_support::parameter_types;
 use frame_system as system;
 use sp_core::H256;
@@ -18,7 +18,7 @@ frame_support::construct_runtime!(
         UncheckedExtrinsic = UncheckedExtrinsic,
     {
         System: frame_system::{Module, Call, Config, Storage, Event<T>},
-        KittyModule: pallet_kitty::{Module, Call, Storage, Event<T>},
+        KittyModule: pallet_kitties::{Module, Call, Storage, Event<T>},
     }
 );
 
@@ -52,7 +52,7 @@ impl system::Config for Test {
     type SS58Prefix = SS58Prefix;
 }
 
-impl pallet_kitty::Config for Test {
+impl pallet_kitties::Config for Test {
     type Event = Event;
     type RandomnessSource = RandomnessCollectiveFlip;
 }

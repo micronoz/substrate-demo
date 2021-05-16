@@ -41,7 +41,7 @@ use pallet_transaction_payment::CurrencyAdapter;
 pub use sp_runtime::BuildStorage;
 pub use sp_runtime::{Perbill, Permill};
 
-pub use pallet_kitty;
+pub use pallet_kitties;
 /// Import the template pallet.
 pub use pallet_template;
 
@@ -273,7 +273,7 @@ impl pallet_template::Config for Runtime {
     type Event = Event;
 }
 
-impl pallet_kitty::Config for Runtime {
+impl pallet_kitties::Config for Runtime {
     type Event = Event;
     type RandomnessSource = RandomnessCollectiveFlip;
 }
@@ -295,7 +295,7 @@ construct_runtime!(
         Sudo: pallet_sudo::{Module, Call, Config<T>, Storage, Event<T>},
         // Include the custom logic from the pallet-template in the runtime.
         TemplateModule: pallet_template::{Module, Call, Storage, Event<T>},
-        Kitty: pallet_kitty::{Module, Call, Storage, Event<T>}
+        Kitties: pallet_kitties::{Module, Call, Storage, Event<T>}
     }
 );
 
