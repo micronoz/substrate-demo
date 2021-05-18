@@ -21,6 +21,8 @@ pub mod pallet {
     };
     use frame_system::pallet_prelude::*;
     use sp_core::H256;
+    use sp_io::hashing::blake2_128;
+    use sp_std::vec::Vec;
 
     /// Configure the pallet by specifying the parameters and types on which it depends.
     #[pallet::config]
@@ -40,44 +42,121 @@ pub mod pallet {
     // Learn more about declaring storage items:
     // https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
     pub(super) type KittyOwners<T: Config> =
-        StorageMap<_, Blake2_128Concat, T::AccountId, sp_std::vec::Vec<[u8; 16]>, ValueQuery>;
+        StorageMap<_, Blake2_128Concat, T::AccountId, Option<Vec<[u8; 16]>>, ValueQuery>;
 
     #[pallet::storage]
     pub(super) type Kitties<T: Config> =
-        StorageMap<_, Blake2_128Concat, [u8; 16], Kitty<T>, ValueQuery>;
+        StorageMap<_, Blake2_128Concat, [u8; 16], Option<Kitty<T>>, ValueQuery>;
 
     #[derive(Encode, Decode, Clone, PartialEq, Debug)]
     pub struct Kitty<T: Config> {
         owner: T::AccountId,
         dna: [u8; 16],
+        gender: Gender,
     }
-
-    impl<T: Config> Default for Kitty<T> {
-        fn default() -> Kitty<T> {
-            return Kitty {
-                owner: T::AccountId::default(),
-                dna: Default::default(),
-            };
-        }
+    #[derive(Encode, Decode, Clone, PartialEq, Debug)]
+    pub enum Gender {
+        Male,
+        Female,
     }
 
     impl<T: Config> Kitty<T> {
-        pub fn new(owner: T::AccountId) -> Result<Kitty<T>, Error<T>> {
+        pub fn new(owner: &T::AccountId) -> Result<Kitty<T>, Error<T>> {
             // Collect sources for random hash
-            let payload = (
-                owner.clone(),
-                T::RandomnessSource::random(&owner.encode()[..]),
-            );
+            let payload = (&owner, T::RandomnessSource::random(&owner.encode()[..]));
 
             // Generate random dna source
-            let dna = payload.using_encoded(sp_io::hashing::blake2_128);
+            let dna = payload.using_encoded(blake2_128);
 
-            // Ensure that dna is unique
+            return Ok(Kitty {
+                dna,
+                owner: owner.clone(),
+                gender: <Kitty<T>>::get_gender(dna),
+            });
+        }
+
+        fn check_duplicate(dna: [u8; 16]) -> Result<(), Error<T>> {
             if <Kitties<T>>::contains_key(dna) {
-                return Err(<Error<T>>::DuplicateKitty);
+                Err(<Error<T>>::DuplicateKitty)
             } else {
-                return Ok(Kitty { dna, owner });
+                Ok(())
             }
+        }
+
+        fn save_kitty(
+            dna: [u8; 16],
+            kitty: Kitty<T>,
+            owner: &T::AccountId,
+        ) -> Result<(), Error<T>> {
+            // Ensure no duplicate dna
+            <Kitty<T>>::check_duplicate(dna)?;
+
+            // Save Kitty struct
+            <Kitties<T>>::insert(dna, Some(kitty));
+
+            // Assign kitty dna to an owner
+            match <KittyOwners<T>>::get(owner) {
+                Some(mut result) => {
+                    result.push(dna);
+                    <KittyOwners<T>>::insert(owner, Some(result));
+                }
+                None => {
+                    <KittyOwners<T>>::insert(owner, Some(sp_std::vec![dna]));
+                }
+            }
+            Ok(())
+        }
+
+        fn get_gender(dna: [u8; 16]) -> Gender {
+            let total: u8 = dna.iter().sum();
+            if total >= 128 {
+                Gender::Male
+            } else {
+                Gender::Female
+            }
+        }
+
+        pub fn ensure_owner(&self, owner: &T::AccountId) -> Result<(), Error<T>> {
+            return match *owner == self.owner {
+                true => Ok(()),
+                false => Err(<Error<T>>::KittyOwnerMismatch),
+            };
+        }
+
+        pub fn ensure_different_kitty(&self, other: &Kitty<T>) -> Result<(), Error<T>> {
+            return match *self != *other {
+                true => Ok(()),
+                false => Err(<Error<T>>::KittyPartnerMissing),
+            };
+        }
+
+        pub fn ensure_different_gender(&self, other: &Kitty<T>) -> Result<(), Error<T>> {
+            return match self.gender != other.gender {
+                true => Ok(()),
+                false => Err(<Error<T>>::KittyGendersNotCompatible),
+            };
+        }
+
+        pub fn breed(
+            &self,
+            partner: &Kitty<T>,
+            owner: &T::AccountId,
+        ) -> Result<Kitty<T>, Error<T>> {
+            // Combine parent DNAs as seed
+            let payload = (
+                self.dna,
+                partner.dna,
+                T::RandomnessSource::random(&self.dna),
+            );
+
+            // Generate dna
+            let dna = payload.using_encoded(blake2_128);
+
+            Ok(Kitty {
+                dna,
+                owner: owner.clone(),
+                gender: <Kitty<T>>::get_gender(dna),
+            })
         }
     }
 
@@ -89,7 +168,10 @@ pub mod pallet {
     pub enum Event<T: Config> {
         /// A Kitty has been generated for the owner with random dna.
         /// [dna, owner]
-        KittyCreated([u8; 16], T::AccountId),
+        KittyCreated([u8; 16], T::AccountId, Gender),
+        /// A Kitty has been bred.
+        /// [dna, owner]
+        KittyBred([u8; 16], T::AccountId, Gender),
     }
 
     // Errors inform users that something went wrong.
@@ -101,6 +183,14 @@ pub mod pallet {
         StorageOverflow,
         /// Kitty was generated with a DNA that already exists
         DuplicateKitty,
+        /// Only owners of a kitty can breed them
+        KittyOwnerMismatch,
+        /// Kitty not found
+        KittyNotFound,
+        /// Kitties need a valid (different from self) partner to breed
+        KittyPartnerMissing,
+        /// Kitties must have different genders to be able to breed
+        KittyGendersNotCompatible,
     }
 
     #[pallet::hooks]
@@ -113,30 +203,59 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         /// An example dispatchable that takes a singles value as a parameter, writes the value to
         /// storage and emits an event. This function must be dispatched by a signed extrinsic.
-        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1))]
+        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,2))]
         pub fn create_kitty(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
             // Check that the extrinsic was signed and get the signer.
             // This function will return an error if the extrinsic is not signed.
             // https://substrate.dev/docs/en/knowledgebase/runtime/origin
             let who = ensure_signed(origin)?;
-            let my_kitty = <Kitty<T>>::new(who.clone())?;
+            let my_kitty = <Kitty<T>>::new(&who)?;
             let dna = my_kitty.dna;
+            let gender = my_kitty.gender.clone();
 
             // Insert the created kitty into storage
-            <Kitties<T>>::insert(dna, &my_kitty);
-
-            match <KittyOwners<T>>::try_get(&who) {
-                Ok(mut result) => {
-                    result.push(dna);
-                    <KittyOwners<T>>::insert(&who, &result);
-                }
-                Err(_) => {
-                    <KittyOwners<T>>::insert(&who, sp_std::vec![dna]);
-                }
-            }
+            <Kitty<T>>::save_kitty(dna, my_kitty, &who)?;
 
             // Emit an event.
-            Self::deposit_event(Event::KittyCreated(dna, who));
+            Self::deposit_event(Event::KittyCreated(dna, who, gender));
+            // Return a successful DispatchResultWithPostInfo
+            Ok(().into())
+        }
+
+        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,2))]
+        pub fn breed_kitty(
+            origin: OriginFor<T>,
+            first_parent: [u8; 16],
+            second_parent: [u8; 16],
+        ) -> DispatchResultWithPostInfo {
+            // Ensure signed origin
+            let who = ensure_signed(origin)?;
+
+            // Ensure that kitties exist
+            let first_parent_struct =
+                <Kitties<T>>::get(&first_parent).ok_or_else(|| <Error<T>>::KittyNotFound)?;
+            let second_parent_struct =
+                <Kitties<T>>::get(&second_parent).ok_or_else(|| <Error<T>>::KittyNotFound)?;
+
+            // Ensure that kitties are owned by the origin
+            first_parent_struct.ensure_owner(&who)?;
+            second_parent_struct.ensure_owner(&who)?;
+
+            // Ensure parents are not the same
+            first_parent_struct.ensure_different_kitty(&second_parent_struct)?;
+            // Ensure parents have opposite genders
+            first_parent_struct.ensure_different_gender(&second_parent_struct)?;
+
+            // Breed kitty
+            let child_kitty = first_parent_struct.breed(&second_parent_struct, &who)?;
+            let dna = child_kitty.dna;
+            let gender = child_kitty.gender.clone();
+
+            // Insert the created kitty into storage
+            <Kitty<T>>::save_kitty(dna, child_kitty, &who)?;
+
+            // Emit an event.
+            Self::deposit_event(Event::KittyBred(dna, who, gender));
             // Return a successful DispatchResultWithPostInfo
             Ok(().into())
         }

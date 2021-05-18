@@ -1,8 +1,9 @@
 #!/bin/bash
 cargo build --release
-sh -c "cargo run --release -- --base-path data/node2 --chain local --bob --port 30334 --telemetry-url 'wss://telemetry.polkadot.io/submit/ 0' --name validator-bob --validator" &> data/node1_log &
+mkdir -p data
+sh -c "cargo run --release -- --base-path data/node1 --chain local --bob --port 30334 --telemetry-url 'wss://telemetry.polkadot.io/submit/ 0' --name validator-bob --validator" &> data/node1_log &
 process_id_1=$!
-sh -c "cargo run --release -- --base-path data/node1 --chain local --alice --telemetry-url 'wss://telemetry.polkadot.io/submit/ 0' --name validator-alice  --validator" &> data/node2_log &
+sh -c "cargo run --release -- --base-path data/node2 --chain local --alice --telemetry-url 'wss://telemetry.polkadot.io/submit/ 0' --name validator-alice  --validator" &> data/node2_log &
 process_id_2=$!
 echo $process_id_1 $process_id_2
 gnome-terminal -- tail -f data/node1_log
