@@ -1,5 +1,6 @@
 #!/bin/bash
 cargo build --release
+rm -rf data
 mkdir -p data
 sh -c "cargo run --release -- --base-path data/node1 --chain local --bob --port 30334 --telemetry-url 'wss://telemetry.polkadot.io/submit/ 0' --name validator-bob --validator" &> data/node1_log &
 process_id_1=$!

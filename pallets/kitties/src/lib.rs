@@ -22,7 +22,6 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use sp_core::H256;
     use sp_io::hashing::blake2_128;
-    use sp_std::vec::Vec;
 
     /// Configure the pallet by specifying the parameters and types on which it depends.
     #[pallet::config]
@@ -41,8 +40,15 @@ pub mod pallet {
     #[pallet::storage]
     // Learn more about declaring storage items:
     // https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
-    pub(super) type KittyOwners<T: Config> =
-        StorageMap<_, Blake2_128Concat, T::AccountId, Option<Vec<[u8; 16]>>, ValueQuery>;
+    pub(super) type KittyOwners<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        Blake2_128Concat,
+        [u8; 16],
+        Option<()>,
+        ValueQuery,
+    >;
 
     #[pallet::storage]
     pub(super) type Kitties<T: Config> =
@@ -61,9 +67,12 @@ pub mod pallet {
     }
 
     impl<T: Config> Kitty<T> {
-        pub fn new(owner: &T::AccountId) -> Result<Kitty<T>, Error<T>> {
+        fn new(owner: &T::AccountId) -> Result<Kitty<T>, Error<T>> {
             // Collect sources for random hash
-            let payload = (&owner, T::RandomnessSource::random(&owner.encode()[..]));
+            let payload = (
+                owner.clone(),
+                T::RandomnessSource::random(&owner.encode()[..]),
+            );
 
             // Generate random dna source
             let dna = payload.using_encoded(blake2_128);
@@ -95,16 +104,17 @@ pub mod pallet {
             <Kitties<T>>::insert(dna, Some(kitty));
 
             // Assign kitty dna to an owner
-            match <KittyOwners<T>>::get(owner) {
-                Some(mut result) => {
-                    result.push(dna);
-                    <KittyOwners<T>>::insert(owner, Some(result));
-                }
-                None => {
-                    <KittyOwners<T>>::insert(owner, Some(sp_std::vec![dna]));
-                }
-            }
+            <KittyOwners<T>>::insert(owner, dna, Some(()));
             Ok(())
+        }
+
+        fn transfer_ownership(kitty: &Kitty<T>, to: &T::AccountId) {
+            <Kitties<T>>::mutate(&kitty.dna, |x| match x {
+                Some(kitty) => kitty.owner = to.clone(),
+                _ => panic!("Encountered unexpected error when mutating kitty"),
+            });
+            <KittyOwners<T>>::remove(&kitty.owner, &kitty.dna);
+            <KittyOwners<T>>::insert(&to, &kitty.dna, Some(()));
         }
 
         fn get_gender(dna: [u8; 16]) -> Gender {
@@ -116,32 +126,28 @@ pub mod pallet {
             }
         }
 
-        pub fn ensure_owner(&self, owner: &T::AccountId) -> Result<(), Error<T>> {
+        fn ensure_owner(&self, owner: &T::AccountId) -> Result<(), Error<T>> {
             return match *owner == self.owner {
                 true => Ok(()),
                 false => Err(<Error<T>>::KittyOwnerMismatch),
             };
         }
 
-        pub fn ensure_different_kitty(&self, other: &Kitty<T>) -> Result<(), Error<T>> {
+        fn ensure_different_kitty(&self, other: &Kitty<T>) -> Result<(), Error<T>> {
             return match *self != *other {
                 true => Ok(()),
                 false => Err(<Error<T>>::KittyPartnerMissing),
             };
         }
 
-        pub fn ensure_different_gender(&self, other: &Kitty<T>) -> Result<(), Error<T>> {
+        fn ensure_different_gender(&self, other: &Kitty<T>) -> Result<(), Error<T>> {
             return match self.gender != other.gender {
                 true => Ok(()),
                 false => Err(<Error<T>>::KittyGendersNotCompatible),
             };
         }
 
-        pub fn breed(
-            &self,
-            partner: &Kitty<T>,
-            owner: &T::AccountId,
-        ) -> Result<Kitty<T>, Error<T>> {
+        fn breed(&self, partner: &Kitty<T>, owner: &T::AccountId) -> Result<Kitty<T>, Error<T>> {
             // Combine parent DNAs as seed
             let payload = (
                 self.dna,
@@ -167,11 +173,14 @@ pub mod pallet {
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
         /// A Kitty has been generated for the owner with random dna.
-        /// [dna, owner]
+        /// [dna, owner, gender]
         KittyCreated([u8; 16], T::AccountId, Gender),
         /// A Kitty has been bred.
-        /// [dna, owner]
+        /// [dna, owner, genrder]
         KittyBred([u8; 16], T::AccountId, Gender),
+        /// A Kitty has been transfered.
+        /// [dna, from, to]
+        KittyTransfer([u8; 16], T::AccountId, T::AccountId),
     }
 
     // Errors inform users that something went wrong.
@@ -183,7 +192,7 @@ pub mod pallet {
         StorageOverflow,
         /// Kitty was generated with a DNA that already exists
         DuplicateKitty,
-        /// Only owners of a kitty can breed them
+        /// Only owners of a kitty can interact with them
         KittyOwnerMismatch,
         /// Kitty not found
         KittyNotFound,
@@ -222,7 +231,7 @@ pub mod pallet {
             Ok(().into())
         }
 
-        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,2))]
+        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(2,2))]
         pub fn breed_kitty(
             origin: OriginFor<T>,
             first_parent: [u8; 16],
@@ -262,21 +271,26 @@ pub mod pallet {
 
         /// An example dispatchable that may throw a custom error.
         #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1))]
-        pub fn cause_error(origin: OriginFor<T>) -> DispatchResultWithPostInfo {
-            let _who = ensure_signed(origin)?;
+        pub fn transfer_kitty(
+            origin: OriginFor<T>,
+            receiver: T::AccountId,
+            kitty: [u8; 16],
+        ) -> DispatchResultWithPostInfo {
+            let who = ensure_signed(origin)?;
 
-            // // Read a value from storage.
-            // match <Something<T>>::get() {
-            //     // Return an error if the value has not been set.
-            //     None => Err(Error::<T>::NoneValue)?,
-            //     Some(old) => {
-            //         // Increment the value read from storage; will error in the event of overflow.
-            //         let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-            //         // Update the value in storage with the incremented result.
-            //         <Something<T>>::put(new);
-            //         Ok(().into())
-            //     }
-            // }
+            // Ensure that kitty exists
+            let kitty_struct =
+                <Kitties<T>>::get(&kitty).ok_or_else(|| <Error<T>>::KittyNotFound)?;
+
+            // Ensure that origin owns the kitty
+            kitty_struct.ensure_owner(&who)?;
+
+            // Transfer ownership
+            <Kitty<T>>::transfer_ownership(&kitty_struct, &receiver);
+
+            // Emit event
+            Self::deposit_event(Event::KittyTransfer(kitty, who, receiver));
+
             Ok(().into())
         }
     }
