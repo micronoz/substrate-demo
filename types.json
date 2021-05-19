@@ -1,7 +1,6 @@
 {
     "AccountInfo": "AccountInfoWithProviders",
     "Kitty": {
-      "owner": "AccountId",
       "dna": "[u8; 16]",
       "gender": "Gender"
     },
