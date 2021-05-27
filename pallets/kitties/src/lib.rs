@@ -22,6 +22,7 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use sp_core::H256;
     use sp_io::hashing::blake2_128;
+    use sp_runtime::traits::{AtLeast32BitUnsigned, Bounded, CheckedAdd, One};
     use sp_std::boxed::Box;
 
     /// Configure the pallet by specifying the parameters and types on which it depends.
@@ -30,31 +31,28 @@ pub mod pallet {
         /// Because this pallet emits events, it depends on the runtime's definition of an event.
         type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
         type RandomnessSource: Randomness<H256>;
+        type KittyIndex: Parameter + AtLeast32BitUnsigned + Bounded + Default + Copy;
     }
 
     #[pallet::pallet]
     #[pallet::generate_store(pub(super) trait Store)]
     pub struct Pallet<T>(_);
 
-    // The pallet's runtime storage items.
-    // https://substrate.dev/docs/en/knowledgebase/runtime/storage
     #[pallet::storage]
-    // Learn more about declaring storage items:
-    // https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
     #[pallet::getter(fn kitties)]
     pub(super) type Kitties<T: Config> = StorageDoubleMap<
         _,
         Blake2_128Concat,
         T::AccountId,
         Blake2_128Concat,
-        u32,
+        T::KittyIndex,
         Option<Kitty>,
         ValueQuery,
     >;
 
     #[pallet::storage]
     #[pallet::getter(fn next_kitty_id)]
-    pub(super) type NextKittyId<T: Config> = StorageValue<_, u32, ValueQuery>;
+    pub(super) type NextKittyId<T: Config> = StorageValue<_, T::KittyIndex, ValueQuery>;
 
     #[derive(Encode, Decode, Clone, PartialEq, Debug)]
     pub struct Kitty {
@@ -67,12 +65,13 @@ pub mod pallet {
     }
 
     impl Kitty {
-        fn new<T: Config>(owner: T::AccountId, index: u32) -> Result<Kitty, Error<T>> {
+        fn new<T: Config>(owner: T::AccountId, index: T::KittyIndex) -> Result<Kitty, Error<T>> {
             // Collect sources for random hash
             let payload = (
                 owner.clone(),
                 T::RandomnessSource::random(&owner.encode()[..]),
                 index,
+                frame_system::Module::<T>::extrinsic_index(),
             );
 
             // Generate random dna source
@@ -97,11 +96,13 @@ pub mod pallet {
 
         fn save_kitty<T: Config>(
             owner: &T::AccountId,
-            generator: Box<dyn FnOnce(u32) -> Result<Kitty, Error<T>>>,
-        ) -> Result<(Kitty, u32), Error<T>> {
-            NextKittyId::<T>::try_mutate(|id| -> Result<(Kitty, u32), Error<T>> {
+            generator: Box<dyn FnOnce(T::KittyIndex) -> Result<Kitty, Error<T>>>,
+        ) -> Result<(Kitty, T::KittyIndex), Error<T>> {
+            NextKittyId::<T>::try_mutate(|id| -> Result<(Kitty, T::KittyIndex), Error<T>> {
                 let current_id = *id;
-                *id = id.checked_add(1).ok_or(Error::<T>::KittyIdOverflow)?;
+                *id = id
+                    .checked_add(&(One::one()))
+                    .ok_or(Error::<T>::KittyIdOverflow)?;
                 let kitty = generator(current_id)?;
                 Kitties::<T>::insert(owner, current_id, Some(kitty.clone()));
                 Ok((kitty, current_id))
@@ -132,7 +133,11 @@ pub mod pallet {
             Kitty::get_gender_from_dna(self.dna)
         }
 
-        fn breed<T: Config>(first: Kitty, second: Kitty, index: u32) -> Result<Kitty, Error<T>> {
+        fn breed<T: Config>(
+            first: Kitty,
+            second: Kitty,
+            index: T::KittyIndex,
+        ) -> Result<Kitty, Error<T>> {
             // Ensure parents are not the same
             Kitty::ensure_different_kitty(&first, &second)?;
             // Ensure parents have opposite genders
@@ -143,6 +148,7 @@ pub mod pallet {
                 second.dna,
                 T::RandomnessSource::random(&index.encode()[..]),
                 index,
+                frame_system::Module::<T>::extrinsic_index(),
             );
 
             // Generate dna
@@ -160,13 +166,13 @@ pub mod pallet {
     pub enum Event<T: Config> {
         /// A Kitty has been generated for the owner with random dna.
         /// [kitty, owner]
-        KittyCreated(Kitty, u32, T::AccountId),
+        KittyCreated(Kitty, T::KittyIndex, T::AccountId),
         /// A Kitty has been bred.
         /// [kitty, owner]
-        KittyBred(Kitty, u32, T::AccountId),
+        KittyBred(Kitty, T::KittyIndex, T::AccountId),
         /// A Kitty has been transfered.
         /// [kitty, from, to]
-        KittyTransfer(u32, T::AccountId, T::AccountId),
+        KittyTransfer(T::KittyIndex, T::AccountId, T::AccountId),
     }
 
     // Errors inform users that something went wrong.
@@ -184,7 +190,7 @@ pub mod pallet {
         KittyPartnerMissing,
         /// Kitties must have different genders to be able to breed
         KittyGendersNotCompatible,
-        /// Kitty Id has overflowed u32
+        /// Kitty Id has overflowed KittyIndex
         KittyIdOverflow,
     }
 
@@ -218,17 +224,17 @@ pub mod pallet {
         #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(3,2))]
         pub fn breed_kitty(
             origin: OriginFor<T>,
-            first_parent: u32,
-            second_parent: u32,
+            first_parent: T::KittyIndex,
+            second_parent: T::KittyIndex,
         ) -> DispatchResultWithPostInfo {
             // Ensure signed origin
             let who = ensure_signed(origin)?;
 
             // Ensure that kitties exist
             let first_parent_struct =
-                Kitties::<T>::get(&who, first_parent).ok_or_else(|| Error::<T>::KittyNotFound)?;
+                Self::kitties(&who, first_parent).ok_or_else(|| Error::<T>::KittyNotFound)?;
             let second_parent_struct =
-                Kitties::<T>::get(&who, second_parent).ok_or_else(|| Error::<T>::KittyNotFound)?;
+                Self::kitties(&who, second_parent).ok_or_else(|| Error::<T>::KittyNotFound)?;
 
             // Insert the created kitty into storage
             let (child_kitty, id) = Kitty::save_kitty::<T>(
@@ -249,20 +255,29 @@ pub mod pallet {
         pub fn transfer_kitty(
             origin: OriginFor<T>,
             receiver: T::AccountId,
-            kitty_id: u32,
+            kitty_id: T::KittyIndex,
         ) -> DispatchResultWithPostInfo {
             // Ensure signed origin
             let who = ensure_signed(origin)?;
 
-            // Transfer ownership
-            let kitty =
-                Kitties::<T>::take(&who, kitty_id).ok_or_else(|| Error::<T>::KittyNotFound)?;
-            Kitties::<T>::insert(&receiver, kitty_id, Some(kitty.clone()));
+            Kitties::<T>::try_mutate_exists(
+                who.clone(),
+                kitty_id,
+                |kitty| -> DispatchResultWithPostInfo {
+                    if who == receiver {
+                        ensure!(kitty.is_some(), Error::<T>::KittyNotFound);
+                        return Ok(().into());
+                    }
 
-            // Emit event
-            Self::deposit_event(Event::KittyTransfer(kitty_id, who, receiver));
+                    let kitty = kitty.take().ok_or(Error::<T>::KittyNotFound)?;
 
-            Ok(().into())
+                    Kitties::<T>::insert(&receiver, kitty_id, kitty);
+
+                    Self::deposit_event(Event::KittyTransfer(kitty_id, who, receiver));
+
+                    Ok(().into())
+                },
+            )
         }
     }
 }

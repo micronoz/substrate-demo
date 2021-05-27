@@ -69,6 +69,7 @@ impl Randomness<H256> for MockRandom {
 impl pallet_kitties::Config for Test {
     type Event = Event;
     type RandomnessSource = MockRandom;
+    type KittyIndex = u32;
 }
 
 // Build genesis storage according to the mock runtime.
