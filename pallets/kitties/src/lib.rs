@@ -41,6 +41,7 @@ pub mod pallet {
     #[pallet::storage]
     // Learn more about declaring storage items:
     // https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
+    #[pallet::getter(fn kitties)]
     pub(super) type Kitties<T: Config> = StorageDoubleMap<
         _,
         Blake2_128Concat,
@@ -52,12 +53,12 @@ pub mod pallet {
     >;
 
     #[pallet::storage]
+    #[pallet::getter(fn next_kitty_id)]
     pub(super) type NextKittyId<T: Config> = StorageValue<_, u32, ValueQuery>;
 
     #[derive(Encode, Decode, Clone, PartialEq, Debug)]
     pub struct Kitty {
-        dna: [u8; 16],
-        gender: Gender,
+        pub dna: [u8; 16],
     }
     #[derive(Encode, Decode, Clone, PartialEq, Debug)]
     pub enum Gender {
@@ -77,31 +78,33 @@ pub mod pallet {
             // Generate random dna source
             let dna = payload.using_encoded(blake2_128);
 
-            return Ok(Kitty {
-                dna,
-                gender: Kitty::get_gender_from_dna(dna),
-            });
+            return Ok(Kitty { dna });
         }
 
         fn get_gender_from_dna(dna: [u8; 16]) -> Gender {
-            let total: u8 = dna.iter().sum();
-            if total >= 128 {
-                Gender::Male
-            } else {
-                Gender::Female
+            let total = dna.iter().max();
+            match total {
+                Some(total) => {
+                    if total % 2 == 0 {
+                        Gender::Male
+                    } else {
+                        Gender::Female
+                    }
+                }
+                None => Gender::Male,
             }
         }
 
         fn save_kitty<T: Config>(
             owner: &T::AccountId,
             generator: Box<dyn FnOnce(u32) -> Result<Kitty, Error<T>>>,
-        ) -> Result<Kitty, Error<T>> {
-            NextKittyId::<T>::try_mutate(|id| -> Result<Kitty, Error<T>> {
+        ) -> Result<(Kitty, u32), Error<T>> {
+            NextKittyId::<T>::try_mutate(|id| -> Result<(Kitty, u32), Error<T>> {
                 let current_id = *id;
                 *id = id.checked_add(1).ok_or(Error::<T>::KittyIdOverflow)?;
                 let kitty = generator(current_id)?;
                 Kitties::<T>::insert(owner, current_id, Some(kitty.clone()));
-                Ok(kitty)
+                Ok((kitty, current_id))
             })
         }
 
@@ -119,10 +122,14 @@ pub mod pallet {
             first: &Kitty,
             second: &Kitty,
         ) -> Result<(), Error<T>> {
-            match first.gender != second.gender {
+            match first.gender() != second.gender() {
                 true => Ok(()),
                 false => Err(Error::<T>::KittyGendersNotCompatible),
             }
+        }
+
+        pub fn gender(&self) -> Gender {
+            Kitty::get_gender_from_dna(self.dna)
         }
 
         fn breed<T: Config>(first: Kitty, second: Kitty, index: u32) -> Result<Kitty, Error<T>> {
@@ -141,10 +148,7 @@ pub mod pallet {
             // Generate dna
             let dna = payload.using_encoded(blake2_128);
 
-            Ok(Kitty {
-                dna,
-                gender: Kitty::get_gender_from_dna(dna),
-            })
+            Ok(Kitty { dna })
         }
     }
 
@@ -156,13 +160,13 @@ pub mod pallet {
     pub enum Event<T: Config> {
         /// A Kitty has been generated for the owner with random dna.
         /// [kitty, owner]
-        KittyCreated(Kitty, T::AccountId),
+        KittyCreated(Kitty, u32, T::AccountId),
         /// A Kitty has been bred.
         /// [kitty, owner]
-        KittyBred(Kitty, T::AccountId),
+        KittyBred(Kitty, u32, T::AccountId),
         /// A Kitty has been transfered.
         /// [kitty, from, to]
-        KittyTransfer(Kitty, T::AccountId, T::AccountId),
+        KittyTransfer(u32, T::AccountId, T::AccountId),
     }
 
     // Errors inform users that something went wrong.
@@ -174,8 +178,6 @@ pub mod pallet {
         StorageOverflow,
         /// Kitty was generated with a DNA that already exists
         DuplicateKitty,
-        /// Only owners of a kitty can interact with them
-        KittyOwnerMismatch,
         /// Kitty not found
         KittyNotFound,
         /// Kitties need a valid (different from self) partner to breed
@@ -204,11 +206,11 @@ pub mod pallet {
             let who = ensure_signed(origin)?;
             let who_backup = who.clone();
             // Insert the created kitty into storage
-            let my_kitty =
+            let (my_kitty, id) =
                 Kitty::save_kitty::<T>(&who, Box::new(|index| Kitty::new::<T>(who_backup, index)))?;
 
             // Emit an event.
-            Self::deposit_event(Event::KittyCreated(my_kitty, who));
+            Self::deposit_event(Event::KittyCreated(my_kitty, id, who));
             // Return a successful DispatchResultWithPostInfo
             Ok(().into())
         }
@@ -229,7 +231,7 @@ pub mod pallet {
                 Kitties::<T>::get(&who, second_parent).ok_or_else(|| Error::<T>::KittyNotFound)?;
 
             // Insert the created kitty into storage
-            let child_kitty = Kitty::save_kitty::<T>(
+            let (child_kitty, id) = Kitty::save_kitty::<T>(
                 &who,
                 Box::new(|index| {
                     Kitty::breed::<T>(first_parent_struct, second_parent_struct, index)
@@ -237,7 +239,7 @@ pub mod pallet {
             )?;
 
             // Emit an event.
-            Self::deposit_event(Event::KittyBred(child_kitty, who));
+            Self::deposit_event(Event::KittyBred(child_kitty, id, who));
             // Return a successful DispatchResultWithPostInfo
             Ok(().into())
         }
@@ -258,7 +260,7 @@ pub mod pallet {
             Kitties::<T>::insert(&receiver, kitty_id, Some(kitty.clone()));
 
             // Emit event
-            Self::deposit_event(Event::KittyTransfer(kitty, who, receiver));
+            Self::deposit_event(Event::KittyTransfer(kitty_id, who, receiver));
 
             Ok(().into())
         }

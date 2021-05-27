@@ -17,3 +17,5 @@
 
 # Blockchain data folder
 **/data
+
+*.wasm

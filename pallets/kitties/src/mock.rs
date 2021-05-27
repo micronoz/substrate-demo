@@ -1,5 +1,7 @@
+use std::cell::RefCell;
+
 use crate as pallet_kitties;
-use frame_support::parameter_types;
+use frame_support::{parameter_types, traits::Randomness};
 use frame_system as system;
 use sp_core::H256;
 use sp_runtime::{
@@ -18,7 +20,7 @@ frame_support::construct_runtime!(
         UncheckedExtrinsic = UncheckedExtrinsic,
     {
         System: frame_system::{Module, Call, Config, Storage, Event<T>},
-        KittyModule: pallet_kitties::{Module, Call, Storage, Event<T>},
+        KittiesModule: pallet_kitties::{Module, Call, Storage, Event<T>},
     }
 );
 
@@ -52,9 +54,21 @@ impl system::Config for Test {
     type SS58Prefix = SS58Prefix;
 }
 
+thread_local! {
+    static RANDOM_PAYLOAD: RefCell<H256> = RefCell::new(Default::default());
+}
+
+pub struct MockRandom;
+
+impl Randomness<H256> for MockRandom {
+    fn random(_subject: &[u8]) -> H256 {
+        RANDOM_PAYLOAD.with(|v| *v.borrow())
+    }
+}
+
 impl pallet_kitties::Config for Test {
     type Event = Event;
-    type RandomnessSource = RandomnessCollectiveFlip;
+    type RandomnessSource = MockRandom;
 }
 
 // Build genesis storage according to the mock runtime.
