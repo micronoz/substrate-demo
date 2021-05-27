@@ -224,9 +224,9 @@ pub mod pallet {
 
             // Ensure that kitties exist
             let first_parent_struct =
-                <Kitties<T>>::get(&who, first_parent).ok_or_else(|| Error::<T>::KittyNotFound)?;
+                Kitties::<T>::get(&who, first_parent).ok_or_else(|| Error::<T>::KittyNotFound)?;
             let second_parent_struct =
-                <Kitties<T>>::get(&who, second_parent).ok_or_else(|| Error::<T>::KittyNotFound)?;
+                Kitties::<T>::get(&who, second_parent).ok_or_else(|| Error::<T>::KittyNotFound)?;
 
             // Insert the created kitty into storage
             let child_kitty = Kitty::save_kitty::<T>(
@@ -254,8 +254,8 @@ pub mod pallet {
 
             // Transfer ownership
             let kitty =
-                <Kitties<T>>::take(&who, kitty_id).ok_or_else(|| Error::<T>::KittyNotFound)?;
-            <Kitties<T>>::insert(&receiver, kitty_id, Some(kitty.clone()));
+                Kitties::<T>::take(&who, kitty_id).ok_or_else(|| Error::<T>::KittyNotFound)?;
+            Kitties::<T>::insert(&receiver, kitty_id, Some(kitty.clone()));
 
             // Emit event
             Self::deposit_event(Event::KittyTransfer(kitty, who, receiver));
