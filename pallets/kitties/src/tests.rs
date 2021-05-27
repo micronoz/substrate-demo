@@ -13,7 +13,7 @@ fn can_create() {
 
         let kitty = Kitty {
             dna: [
-                229, 32, 78, 248, 81, 2, 246, 121, 208, 232, 58, 118, 70, 78, 137, 103,
+                214, 209, 234, 245, 69, 67, 6, 171, 41, 106, 181, 116, 218, 245, 185, 201,
             ],
         };
         assert_eq!(KittiesModule::kitties(100, 0), Some(kitty.clone()));
@@ -43,7 +43,7 @@ fn can_breed() {
     new_test_ext().execute_with(|| {
         assert_ok!(KittiesModule::create_kitty(Origin::signed(100)));
 
-        System::set_extrinsic_index(1);
+        System::set_extrinsic_index(3);
 
         assert_ok!(KittiesModule::create_kitty(Origin::signed(100)));
 
@@ -64,7 +64,7 @@ fn can_breed() {
 
         let kitty = Kitty {
             dna: [
-                228, 103, 81, 96, 30, 52, 60, 84, 78, 8, 205, 247, 24, 133, 211, 217,
+                145, 236, 235, 229, 18, 100, 83, 204, 176, 115, 244, 197, 48, 106, 46, 45,
             ],
         };
 
