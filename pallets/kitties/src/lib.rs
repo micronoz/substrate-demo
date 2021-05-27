@@ -23,6 +23,7 @@ pub mod pallet {
     use sp_core::H256;
     use sp_io::hashing::blake2_128;
     use sp_runtime::traits::{AtLeast32BitUnsigned, Bounded, CheckedAdd, One};
+
     use sp_std::boxed::Box;
 
     /// Configure the pallet by specifying the parameters and types on which it depends.

@@ -80,5 +80,23 @@ fn can_breed() {
 
 #[test]
 fn test_overflow() {
-    new_test_ext().execute_with(|| {});
+    new_test_ext().execute_with(|| {
+        crate::pallet::NextKittyId::<Test>::mutate(|x| *x = u32::MAX - 3);
+        assert_ok!(KittiesModule::create_kitty(Origin::signed(100)));
+        assert_ok!(KittiesModule::create_kitty(Origin::signed(100)));
+        assert_ok!(KittiesModule::breed_kitty(
+            Origin::signed(100),
+            u32::MAX - 2,
+            u32::MAX - 3
+        ));
+        assert_noop!(
+            KittiesModule::create_kitty(Origin::signed(100)),
+            Error::<Test>::KittyIdOverflow
+        );
+        assert_noop!(
+            KittiesModule::create_kitty(Origin::signed(100)),
+            Error::<Test>::KittyIdOverflow
+        );
+        assert_eq!(KittiesModule::next_kitty_id(), u32::MAX);
+    });
 }
