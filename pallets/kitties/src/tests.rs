@@ -2,16 +2,6 @@ use frame_support::{assert_noop, assert_ok};
 
 use crate::{mock::*, Error, Gender, Kitty};
 
-// Build genesis storage according to the mock runtime.
-pub fn new_test_ext() -> sp_io::TestExternalities {
-    let mut t: sp_io::TestExternalities = frame_system::GenesisConfig::default()
-        .build_storage::<Test>()
-        .unwrap()
-        .into();
-    t.execute_with(|| System::set_block_number(1));
-    t
-}
-
 fn last_event() -> Event {
     System::events().last().unwrap().event.clone()
 }
