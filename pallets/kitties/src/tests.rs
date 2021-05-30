@@ -1,4 +1,4 @@
-use frame_support::{assert_noop, assert_ok};
+use frame_support::{assert_noop, assert_ok, assert_storage_noop};
 
 use crate::{mock::*, Error, Gender, Kitty};
 
@@ -98,5 +98,33 @@ fn test_overflow() {
             Error::<Test>::KittyIdOverflow
         );
         assert_eq!(KittiesModule::next_kitty_id(), u32::MAX);
+    });
+}
+
+#[test]
+fn test_transfer() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(KittiesModule::create_kitty(Origin::signed(100)));
+        assert_ok!(KittiesModule::create_kitty(Origin::signed(100)));
+        assert_ok!(KittiesModule::transfer_kitty(Origin::signed(100), 100, 1));
+        assert_storage_noop!({
+            let _ = KittiesModule::transfer_kitty(Origin::signed(100), 100, 1);
+        });
+        assert_noop!(
+            KittiesModule::transfer_kitty(Origin::signed(100), 100, 5),
+            Error::<Test>::KittyNotFound
+        );
+        assert_noop!(
+            KittiesModule::transfer_kitty(Origin::signed(100), 200, 5),
+            Error::<Test>::KittyNotFound
+        );
+        assert_ok!(KittiesModule::transfer_kitty(Origin::signed(100), 200, 1));
+
+        assert_eq!(
+            last_event(),
+            Event::pallet_kitties(crate::Event::<Test>::KittyTransfer(1, 100, 200))
+        );
+        assert_eq!(KittiesModule::kitties(100, 1).is_some(), false);
+        assert_eq!(KittiesModule::kitties(200, 1).is_some(), true);
     });
 }

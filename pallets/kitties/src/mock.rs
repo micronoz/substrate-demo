@@ -21,12 +21,24 @@ frame_support::construct_runtime!(
     {
         System: frame_system::{Module, Call, Config, Storage, Event<T>},
         KittiesModule: pallet_kitties::{Module, Call, Storage, Event<T>},
+        Balances: pallet_balances::{Module, Call, Storage, Config<T>, Event<T>},
     }
 );
 
 parameter_types! {
     pub const BlockHashCount: u64 = 250;
     pub const SS58Prefix: u8 = 42;
+    pub const ExistentialDeposit: u64 = 1;
+}
+
+impl pallet_balances::Config for Test {
+    type MaxLocks = ();
+    type Balance = u64;
+    type Event = Event;
+    type DustRemoval = ();
+    type ExistentialDeposit = ExistentialDeposit;
+    type AccountStore = System;
+    type WeightInfo = ();
 }
 
 impl system::Config for Test {
@@ -47,7 +59,7 @@ impl system::Config for Test {
     type BlockHashCount = BlockHashCount;
     type Version = ();
     type PalletInfo = PalletInfo;
-    type AccountData = ();
+    type AccountData = pallet_balances::AccountData<u64>;
     type OnNewAccount = ();
     type OnKilledAccount = ();
     type SystemWeightInfo = ();
@@ -70,6 +82,7 @@ impl pallet_kitties::Config for Test {
     type Event = Event;
     type RandomnessSource = MockRandom;
     type KittyIndex = u32;
+    type Currency = Balances;
 }
 
 // Build genesis storage according to the mock runtime.

@@ -17,7 +17,9 @@ mod benchmarking;
 #[frame_support::pallet]
 pub mod pallet {
     use frame_support::{
-        dispatch::DispatchResultWithPostInfo, pallet_prelude::*, traits::Randomness,
+        dispatch::DispatchResultWithPostInfo,
+        pallet_prelude::*,
+        traits::{Currency, ExistenceRequirement, Randomness},
     };
     use frame_system::pallet_prelude::*;
     use sp_core::H256;
@@ -33,11 +35,15 @@ pub mod pallet {
         type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
         type RandomnessSource: Randomness<H256>;
         type KittyIndex: Parameter + AtLeast32BitUnsigned + Bounded + Default + Copy;
+        type Currency: Currency<Self::AccountId>;
     }
 
     #[pallet::pallet]
     #[pallet::generate_store(pub(super) trait Store)]
     pub struct Pallet<T>(_);
+
+    type BalanceOf<T> =
+        <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 
     #[pallet::storage]
     #[pallet::getter(fn kitties)]
@@ -50,6 +56,14 @@ pub mod pallet {
         Option<Kitty>,
         ValueQuery,
     >;
+
+    #[derive(Encode, Decode, Clone, PartialEq, Debug)]
+    pub struct Listing<T: Config>(T::AccountId, BalanceOf<T>);
+
+    #[pallet::storage]
+    #[pallet::getter(fn kitty_exchange)]
+    pub(super) type KittyExchange<T: Config> =
+        StorageMap<_, Blake2_128Concat, T::KittyIndex, Option<Listing<T>>, ValueQuery>;
 
     #[pallet::storage]
     #[pallet::getter(fn next_kitty_id)]
@@ -174,6 +188,9 @@ pub mod pallet {
         /// A Kitty has been transfered.
         /// [kitty, from, to]
         KittyTransfer(T::KittyIndex, T::AccountId, T::AccountId),
+        /// A Kitty has been sold.
+        /// [kitty, price, seller, buyer]
+        KittySold(T::KittyIndex, BalanceOf<T>, T::AccountId, T::AccountId),
     }
 
     // Errors inform users that something went wrong.
@@ -193,6 +210,10 @@ pub mod pallet {
         KittyGendersNotCompatible,
         /// Kitty Id has overflowed KittyIndex
         KittyIdOverflow,
+        /// Kitty is not listed on the exchange
+        KittyNotForSale,
+        /// Cannot buy own kitty
+        CannotBuyOwnKitty,
     }
 
     #[pallet::hooks]
@@ -274,11 +295,72 @@ pub mod pallet {
 
                     Kitties::<T>::insert(&receiver, kitty_id, kitty);
 
+                    KittyExchange::<T>::remove(kitty_id);
+
                     Self::deposit_event(Event::KittyTransfer(kitty_id, who, receiver));
 
                     Ok(().into())
                 },
             )
+        }
+
+        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,2))]
+        pub fn set_price(
+            origin: OriginFor<T>,
+            kitty_id: T::KittyIndex,
+            price: Option<BalanceOf<T>>,
+        ) -> DispatchResultWithPostInfo {
+            let who = ensure_signed(origin)?;
+            ensure!(
+                Kitties::<T>::contains_key(&who, kitty_id),
+                Error::<T>::KittyNotFound
+            );
+
+            match price {
+                Some(price_value) => {
+                    KittyExchange::<T>::insert(kitty_id, Some(Listing::<T>(who, price_value)));
+                    Ok(().into())
+                }
+                None => {
+                    KittyExchange::<T>::remove(kitty_id);
+                    Ok(().into())
+                }
+            }
+        }
+
+        #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,2))]
+        pub fn buy_kitty(
+            origin: OriginFor<T>,
+            kitty_id: T::KittyIndex,
+        ) -> DispatchResultWithPostInfo {
+            let who = ensure_signed(origin)?;
+
+            KittyExchange::<T>::try_mutate(kitty_id, |listing_option| {
+                let Listing::<T>(owner, price) =
+                    listing_option.take().ok_or(Error::<T>::KittyNotForSale)?;
+                ensure!(who != owner, Error::<T>::CannotBuyOwnKitty);
+
+                Kitties::<T>::try_mutate_exists(
+                    who.clone(),
+                    kitty_id,
+                    |kitty| -> DispatchResultWithPostInfo {
+                        let kitty = kitty.take().ok_or(Error::<T>::KittyNotFound)?;
+
+                        T::Currency::transfer(
+                            &who,
+                            &owner,
+                            price,
+                            ExistenceRequirement::KeepAlive,
+                        )?;
+
+                        Kitties::<T>::insert(&who, kitty_id, kitty);
+
+                        Self::deposit_event(Event::KittySold(kitty_id, price, owner, who));
+
+                        Ok(().into())
+                    },
+                )
+            })
         }
     }
 }
