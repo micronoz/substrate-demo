@@ -276,8 +276,14 @@ impl pallet_template::Config for Runtime {
 impl pallet_kitties::Config for Runtime {
     type Event = Event;
     type RandomnessSource = RandomnessCollectiveFlip;
-    type KittyIndex = u32;
     type Currency = Balances;
+}
+
+impl orml_nft::Config for Runtime {
+    type ClassId = u32;
+    type TokenId = u32;
+    type ClassData = ();
+    type TokenData = pallet_kitties::Kitty;
 }
 
 // Create the runtime by composing the FRAME pallets that were previously configured.
@@ -297,7 +303,8 @@ construct_runtime!(
         Sudo: pallet_sudo::{Module, Call, Config<T>, Storage, Event<T>},
         // Include the custom logic from the pallet-template in the runtime.
         TemplateModule: pallet_template::{Module, Call, Storage, Event<T>},
-        Kitties: pallet_kitties::{Module, Call, Storage, Event<T>}
+        Kitties: pallet_kitties::{Module, Call, Storage, Event<T>},
+        NFT: orml_nft::{Module, Storage},
     }
 );
 

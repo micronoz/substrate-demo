@@ -1,10 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-/// Edit this file to define custom logic or remove it if it is not needed.
-/// Learn more about FRAME and the core library of Substrate FRAME pallets:
-/// <https://substrate.dev/docs/en/knowledgebase/runtime/frame>
-pub use pallet::*;
-
 #[cfg(test)]
 mod mock;
 
@@ -14,6 +9,8 @@ mod tests;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
 
+pub use pallet::*;
+
 #[frame_support::pallet]
 pub mod pallet {
     use frame_support::{
@@ -22,20 +19,37 @@ pub mod pallet {
         traits::{Currency, ExistenceRequirement, Randomness},
     };
     use frame_system::pallet_prelude::*;
+    use orml_utilities::with_transaction_result;
+    #[cfg(feature = "std")]
+    use serde::{Deserialize, Serialize};
     use sp_core::H256;
     use sp_io::hashing::blake2_128;
-    use sp_runtime::traits::{AtLeast32BitUnsigned, Bounded, CheckedAdd, One};
 
-    use sp_std::boxed::Box;
+    use orml_nft::Pallet as NftModule;
 
     /// Configure the pallet by specifying the parameters and types on which it depends.
     #[pallet::config]
-    pub trait Config: frame_system::Config {
+    pub trait Config:
+        orml_nft::Config<TokenData = Kitty, ClassData = ()> + frame_system::Config
+    {
         /// Because this pallet emits events, it depends on the runtime's definition of an event.
         type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
         type RandomnessSource: Randomness<H256>;
-        type KittyIndex: Parameter + AtLeast32BitUnsigned + Bounded + Default + Copy;
         type Currency: Currency<Self::AccountId>;
+    }
+
+    #[pallet::genesis_config]
+    #[derive(Default)]
+    pub struct GenesisConfig {}
+
+    #[pallet::genesis_build]
+    impl<T: Config> GenesisBuild<T> for GenesisConfig {
+        fn build(&self) {
+            // create a NTF class
+            let class_id = NftModule::<T>::create_class(&Default::default(), Vec::new(), ())
+                .expect("Cannot fail or invalid chain spec");
+            ClassId::<T>::put(class_id);
+        }
     }
 
     #[pallet::pallet]
@@ -44,18 +58,7 @@ pub mod pallet {
 
     type BalanceOf<T> =
         <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
-
-    #[pallet::storage]
-    #[pallet::getter(fn kitties)]
-    pub(super) type Kitties<T: Config> = StorageDoubleMap<
-        _,
-        Blake2_128Concat,
-        T::AccountId,
-        Blake2_128Concat,
-        T::KittyIndex,
-        Option<Kitty>,
-        ValueQuery,
-    >;
+    type KittyIndexOf<T> = <T as orml_nft::Config>::TokenId;
 
     #[derive(Encode, Decode, Clone, PartialEq, Debug)]
     pub struct Listing<T: Config>(T::AccountId, BalanceOf<T>);
@@ -63,16 +66,16 @@ pub mod pallet {
     #[pallet::storage]
     #[pallet::getter(fn kitty_exchange)]
     pub(super) type KittyExchange<T: Config> =
-        StorageMap<_, Blake2_128Concat, T::KittyIndex, Option<Listing<T>>, ValueQuery>;
+        StorageMap<_, Blake2_128Concat, KittyIndexOf<T>, Option<Listing<T>>, ValueQuery>;
 
     #[pallet::storage]
-    #[pallet::getter(fn next_kitty_id)]
-    pub(super) type NextKittyId<T: Config> = StorageValue<_, T::KittyIndex, ValueQuery>;
+    #[pallet::getter(fn class_id)]
+    pub(super) type ClassId<T: Config> = StorageValue<_, T::ClassId, ValueQuery>;
 
-    #[derive(Encode, Decode, Clone, PartialEq, Debug)]
-    pub struct Kitty {
-        pub dna: [u8; 16],
-    }
+    #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+    #[derive(Encode, Decode, Clone, PartialEq, Debug, Eq, Copy)]
+    pub struct Kitty(pub [u8; 16]);
+
     #[derive(Encode, Decode, Clone, PartialEq, Debug)]
     pub enum Gender {
         Male,
@@ -80,19 +83,18 @@ pub mod pallet {
     }
 
     impl Kitty {
-        fn new<T: Config>(owner: T::AccountId, index: T::KittyIndex) -> Result<Kitty, Error<T>> {
+        fn new<T: Config>(owner: T::AccountId) -> Result<Kitty, Error<T>> {
             // Collect sources for random hash
             let payload = (
                 owner.clone(),
                 T::RandomnessSource::random(&owner.encode()[..]),
-                index,
                 frame_system::Module::<T>::extrinsic_index(),
             );
 
             // Generate random dna source
             let dna = payload.using_encoded(blake2_128);
 
-            return Ok(Kitty { dna });
+            return Ok(Kitty(dna));
         }
 
         fn get_gender_from_dna(dna: [u8; 16]) -> Gender {
@@ -107,21 +109,6 @@ pub mod pallet {
                 }
                 None => Gender::Male,
             }
-        }
-
-        fn save_kitty<T: Config>(
-            owner: &T::AccountId,
-            generator: Box<dyn FnOnce(T::KittyIndex) -> Result<Kitty, Error<T>>>,
-        ) -> Result<(Kitty, T::KittyIndex), Error<T>> {
-            NextKittyId::<T>::try_mutate(|id| -> Result<(Kitty, T::KittyIndex), Error<T>> {
-                let current_id = *id;
-                *id = id
-                    .checked_add(&(One::one()))
-                    .ok_or(Error::<T>::KittyIdOverflow)?;
-                let kitty = generator(current_id)?;
-                Kitties::<T>::insert(owner, current_id, Some(kitty.clone()));
-                Ok((kitty, current_id))
-            })
         }
 
         fn ensure_different_kitty<T: Config>(
@@ -145,31 +132,26 @@ pub mod pallet {
         }
 
         pub fn gender(&self) -> Gender {
-            Kitty::get_gender_from_dna(self.dna)
+            Kitty::get_gender_from_dna(self.0)
         }
 
-        fn breed<T: Config>(
-            first: Kitty,
-            second: Kitty,
-            index: T::KittyIndex,
-        ) -> Result<Kitty, Error<T>> {
+        fn breed<T: Config>(first: Kitty, second: Kitty) -> Result<Kitty, Error<T>> {
             // Ensure parents are not the same
             Kitty::ensure_different_kitty(&first, &second)?;
             // Ensure parents have opposite genders
             Kitty::ensure_different_gender(&first, &second)?;
             // Combine parent DNAs as seed
             let payload = (
-                first.dna,
-                second.dna,
-                T::RandomnessSource::random(&index.encode()[..]),
-                index,
+                first.0,
+                second.0,
+                T::RandomnessSource::random_seed(),
                 frame_system::Module::<T>::extrinsic_index(),
             );
 
             // Generate dna
             let dna = payload.using_encoded(blake2_128);
 
-            Ok(Kitty { dna })
+            Ok(Kitty(dna))
         }
     }
 
@@ -181,16 +163,19 @@ pub mod pallet {
     pub enum Event<T: Config> {
         /// A Kitty has been generated for the owner with random dna.
         /// [kitty, owner]
-        KittyCreated(Kitty, T::KittyIndex, T::AccountId),
+        KittyCreated(Kitty, KittyIndexOf<T>, T::AccountId),
         /// A Kitty has been bred.
         /// [kitty, owner]
-        KittyBred(Kitty, T::KittyIndex, T::AccountId),
+        KittyBred(Kitty, KittyIndexOf<T>, T::AccountId),
         /// A Kitty has been transfered.
         /// [kitty, from, to]
-        KittyTransfer(T::KittyIndex, T::AccountId, T::AccountId),
+        KittyTransfer(KittyIndexOf<T>, T::AccountId, T::AccountId),
         /// A Kitty has been sold.
         /// [kitty, price, seller, buyer]
-        KittySold(T::KittyIndex, BalanceOf<T>, T::AccountId, T::AccountId),
+        KittySold(KittyIndexOf<T>, BalanceOf<T>, T::AccountId, T::AccountId),
+        /// A Kitty's price has been updated
+        /// [kitty, price, owner]
+        KittyPriceUpdated(KittyIndexOf<T>, Option<BalanceOf<T>>, T::AccountId),
     }
 
     // Errors inform users that something went wrong.
@@ -214,10 +199,24 @@ pub mod pallet {
         KittyNotForSale,
         /// Cannot buy own kitty
         CannotBuyOwnKitty,
+        /// Could not create kitty
+        CouldNotCreateKitty,
     }
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
+
+    impl<T: Config> Pallet<T> {
+        fn kitties(owner: &T::AccountId, kitty_id: KittyIndexOf<T>) -> Option<Kitty> {
+            NftModule::<T>::tokens(Self::class_id(), kitty_id).and_then(|x| {
+                if x.owner == *owner {
+                    Some(x.data)
+                } else {
+                    None
+                }
+            })
+        }
+    }
 
     // Dispatchable functions allows users to interact with the pallet and invoke state changes.
     // These functions materialize as "extrinsics", which are often compared to transactions.
@@ -234,11 +233,13 @@ pub mod pallet {
             let who = ensure_signed(origin)?;
             let who_backup = who.clone();
             // Insert the created kitty into storage
-            let (my_kitty, id) =
-                Kitty::save_kitty::<T>(&who, Box::new(|index| Kitty::new::<T>(who_backup, index)))?;
+
+            let kitty = Kitty::new::<T>(who_backup)?;
+            let current_id =
+                NftModule::<T>::mint(&who, Self::class_id(), Default::default(), kitty.clone())?;
 
             // Emit an event.
-            Self::deposit_event(Event::KittyCreated(my_kitty, id, who));
+            Self::deposit_event(Event::KittyCreated(kitty, current_id, who));
             // Return a successful DispatchResultWithPostInfo
             Ok(().into())
         }
@@ -246,8 +247,8 @@ pub mod pallet {
         #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(3,2))]
         pub fn breed_kitty(
             origin: OriginFor<T>,
-            first_parent: T::KittyIndex,
-            second_parent: T::KittyIndex,
+            first_parent: KittyIndexOf<T>,
+            second_parent: KittyIndexOf<T>,
         ) -> DispatchResultWithPostInfo {
             // Ensure signed origin
             let who = ensure_signed(origin)?;
@@ -259,15 +260,12 @@ pub mod pallet {
                 Self::kitties(&who, second_parent).ok_or_else(|| Error::<T>::KittyNotFound)?;
 
             // Insert the created kitty into storage
-            let (child_kitty, id) = Kitty::save_kitty::<T>(
-                &who,
-                Box::new(|index| {
-                    Kitty::breed::<T>(first_parent_struct, second_parent_struct, index)
-                }),
-            )?;
+            let kitty = Kitty::breed::<T>(first_parent_struct, second_parent_struct)?;
+            let current_id =
+                NftModule::<T>::mint(&who, Self::class_id(), Default::default(), kitty.clone())?;
 
             // Emit an event.
-            Self::deposit_event(Event::KittyBred(child_kitty, id, who));
+            Self::deposit_event(Event::KittyBred(kitty, current_id, who));
             // Return a successful DispatchResultWithPostInfo
             Ok(().into())
         }
@@ -277,61 +275,48 @@ pub mod pallet {
         pub fn transfer_kitty(
             origin: OriginFor<T>,
             receiver: T::AccountId,
-            kitty_id: T::KittyIndex,
+            kitty_id: KittyIndexOf<T>,
         ) -> DispatchResultWithPostInfo {
             // Ensure signed origin
             let who = ensure_signed(origin)?;
 
-            Kitties::<T>::try_mutate_exists(
-                who.clone(),
-                kitty_id,
-                |kitty| -> DispatchResultWithPostInfo {
-                    if who == receiver {
-                        ensure!(kitty.is_some(), Error::<T>::KittyNotFound);
-                        return Ok(().into());
-                    }
+            NftModule::<T>::transfer(&who, &receiver, (Self::class_id(), kitty_id))?;
 
-                    let kitty = kitty.take().ok_or(Error::<T>::KittyNotFound)?;
-
-                    Kitties::<T>::insert(&receiver, kitty_id, kitty);
-
-                    KittyExchange::<T>::remove(kitty_id);
-
-                    Self::deposit_event(Event::KittyTransfer(kitty_id, who, receiver));
-
-                    Ok(().into())
-                },
-            )
+            if who != receiver {
+                KittyExchange::<T>::remove(kitty_id);
+                Self::deposit_event(Event::KittyTransfer(kitty_id, who, receiver));
+            }
+            Ok(().into())
         }
 
         #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,2))]
         pub fn set_price(
             origin: OriginFor<T>,
-            kitty_id: T::KittyIndex,
-            price: Option<BalanceOf<T>>,
+            kitty_id: KittyIndexOf<T>,
+            new_price: Option<BalanceOf<T>>,
         ) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
+
             ensure!(
-                Kitties::<T>::contains_key(&who, kitty_id),
+                orml_nft::TokensByOwner::<T>::contains_key(&who, (Self::class_id(), kitty_id)),
                 Error::<T>::KittyNotFound
             );
 
-            match price {
-                Some(price_value) => {
-                    KittyExchange::<T>::insert(kitty_id, Some(Listing::<T>(who, price_value)));
-                    Ok(().into())
-                }
-                None => {
-                    KittyExchange::<T>::remove(kitty_id);
-                    Ok(().into())
-                }
+            match new_price {
+                Some(new_price) => KittyExchange::<T>::mutate_exists(kitty_id, |price| {
+                    *price = Some(Some(Listing::<T>(who.clone(), new_price)))
+                }),
+                None => KittyExchange::<T>::remove(kitty_id),
             }
+
+            Self::deposit_event(Event::KittyPriceUpdated(kitty_id, new_price, who));
+            Ok(().into())
         }
 
         #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,2))]
         pub fn buy_kitty(
             origin: OriginFor<T>,
-            kitty_id: T::KittyIndex,
+            kitty_id: KittyIndexOf<T>,
         ) -> DispatchResultWithPostInfo {
             let who = ensure_signed(origin)?;
 
@@ -340,27 +325,16 @@ pub mod pallet {
                     listing_option.take().ok_or(Error::<T>::KittyNotForSale)?;
                 ensure!(who != owner, Error::<T>::CannotBuyOwnKitty);
 
-                Kitties::<T>::try_mutate_exists(
-                    who.clone(),
-                    kitty_id,
-                    |kitty| -> DispatchResultWithPostInfo {
-                        let kitty = kitty.take().ok_or(Error::<T>::KittyNotFound)?;
+                with_transaction_result(|| {
+                    NftModule::<T>::transfer(&owner, &who, (Self::class_id(), kitty_id))?;
+                    T::Currency::transfer(&who, &owner, price, ExistenceRequirement::KeepAlive)?;
 
-                        T::Currency::transfer(
-                            &who,
-                            &owner,
-                            price,
-                            ExistenceRequirement::KeepAlive,
-                        )?;
+                    Self::deposit_event(Event::KittySold(kitty_id, price, owner, who));
 
-                        Kitties::<T>::insert(&who, kitty_id, kitty);
-
-                        Self::deposit_event(Event::KittySold(kitty_id, price, owner, who));
-
-                        Ok(().into())
-                    },
-                )
-            })
+                    Ok(())
+                })
+            })?;
+            Ok(().into())
         }
     }
 }
